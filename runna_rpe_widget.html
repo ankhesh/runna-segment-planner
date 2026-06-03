@@ -58,6 +58,7 @@
 
   .route { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 22px; }
   .route-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+  .route-actions { display: flex; gap: 8px; align-items: center; }
   #map { width: 100%; height: 360px; border-radius: 12px; border: 1px solid var(--line); }
   .leaflet-container { background: #0b0d11; }
   .route-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 14px 0; }
@@ -151,7 +152,15 @@
   </details>
 
   <div class="route">
-    <div class="route-head"><h2 id="routeName">Route</h2></div>
+    <div class="route-head">
+      <h2 id="routeName">Route</h2>
+      <div class="route-actions">
+        <input id="gpxFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+        <button id="gpxBtn" class="btn-accent">Upload GPX</button>
+        <button id="gpxReset" hidden>Use default route</button>
+      </div>
+    </div>
+    <div id="gpxStatus" class="cond-sum" style="margin:-4px 0 10px"></div>
     <div id="map"></div>
     <div id="routeStats" class="route-stats"></div>
 
@@ -291,8 +300,9 @@ function hrRange(fLo, fHi) {
 }
 
 /* ---------- route geometry along the GPX track ---------- */
-const T = ROUTE.track;            // [cumDistM, cumEquivM, lat, lon, ele]
-const TOTAL = ROUTE.totalDistM;
+let ACTIVE = ROUTE;               // currently-loaded route (default or uploaded)
+let T = ROUTE.track;              // [cumDistM, cumEquivM, lat, lon, ele]
+let TOTAL = ROUTE.totalDistM;
 function lerp(a, b, f) { return a + (b - a) * f; }
 function idxAt(distM) {            // first track index whose cumDist >= distM
   let lo = 0, hi = T.length - 1;
@@ -415,6 +425,87 @@ function windMultSeg(offset, len, baseSec) {
   return (m1 * l1 + m2 * l2) / (l1 + l2);
 }
 
+/* ---------- custom GPX upload (parsed in-browser) ---------- */
+// Mirrors parse_gpx.js so an uploaded route gets the same capped-Minetti
+// equivalent-distance track the built-in route uses.
+const ROUTE_KEY = "runnaSegmentPlanner.route";
+function haversineM(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const la1 = a.lat * rad, la2 = b.lat * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function minettiCr(i) {
+  i = Math.max(-0.45, Math.min(0.45, i));
+  return 155.4 * i ** 5 - 30.4 * i ** 4 - 43.3 * i ** 3 + 46.3 * i ** 2 + 19.5 * i + 3.6;
+}
+const FLAT_CR = minettiCr(0), GM_DOWN_FLOOR = 0.80, GM_UP_CEIL = 2.06;
+function gpxGradeMult(i) { return Math.max(GM_DOWN_FLOOR, Math.min(GM_UP_CEIL, minettiCr(i) / FLAT_CR)); }
+
+function buildRouteFromGpx(text, fallbackName) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("not valid XML/GPX");
+  let nodes = [...doc.getElementsByTagName("trkpt")];
+  if (nodes.length < 2) nodes = [...doc.getElementsByTagName("rtept")];
+  if (nodes.length < 2) throw new Error("no <trkpt> points found");
+  let lastEle = 0, haveEle = false;
+  const pts = nodes.map(n => {
+    const lat = +n.getAttribute("lat"), lon = +n.getAttribute("lon");
+    const eTag = n.getElementsByTagName("ele")[0];
+    let ele = eTag ? parseFloat(eTag.textContent) : NaN;
+    if (isFinite(ele)) { lastEle = ele; haveEle = true; } else ele = lastEle;
+    return { lat, lon, ele };
+  }).filter(p => isFinite(p.lat) && isFinite(p.lon));
+  if (pts.length < 2) throw new Error("track points missing coordinates");
+
+  let cumDist = 0, cumEquiv = 0, ascent = 0, descent = 0;
+  const track = [[0, 0, +pts[0].lat.toFixed(6), +pts[0].lon.toFixed(6), pts[0].ele]];
+  for (let i = 1; i < pts.length; i++) {
+    const d = haversineM(pts[i - 1], pts[i]);
+    if (d < 0.01) continue;
+    const de = pts[i].ele - pts[i - 1].ele;
+    cumDist += d; cumEquiv += d * gpxGradeMult(de / d);
+    if (de > 0) ascent += de; else descent += -de;
+    track.push([+cumDist.toFixed(1), +cumEquiv.toFixed(1), +pts[i].lat.toFixed(6), +pts[i].lon.toFixed(6), pts[i].ele]);
+  }
+  if (track.length < 2 || cumDist < 1) throw new Error("route too short");
+  const eles = pts.map(p => p.ele);
+  const nameTag = doc.getElementsByTagName("name")[0];
+  const name = (nameTag && nameTag.textContent.trim()) || fallbackName || "Custom route";
+  return {
+    name, isLoop: haversineM(pts[0], pts[pts.length - 1]) < 50,
+    points: track.length, totalDistM: Math.round(cumDist),
+    totalDistKm: +(cumDist / 1000).toFixed(2), totalDistMi: +(cumDist / 1609.344).toFixed(2),
+    ascentM: Math.round(ascent), descentM: Math.round(descent),
+    overallGapFactor: +(cumEquiv / cumDist).toFixed(4),
+    gradeModel: { name: "capped-minetti", downFloor: GM_DOWN_FLOOR, upCeil: GM_UP_CEIL },
+    eleMin: Math.round(Math.min(...eles)), eleMax: Math.round(Math.max(...eles)),
+    hasEle: haveEle, custom: true, track,
+  };
+}
+
+let baseLine = null;
+function applyRoute(r, persist) {
+  ACTIVE = r; T = r.track; TOTAL = r.totalDistM;
+  if (state.startOffset > TOTAL) state.startOffset = 0;
+  if (map) {
+    const latlngs = T.map(t => [t[2], t[3]]);
+    if (baseLine) baseLine.remove();
+    baseLine = L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
+    map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
+  }
+  if (persist) { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(r)); } catch (e) {} }
+  const resetBtn = document.getElementById("gpxReset");
+  if (resetBtn) resetBtn.hidden = !r.custom;
+  save(); renderRoute();
+}
+function clearCustomRoute() {
+  try { localStorage.removeItem(ROUTE_KEY); } catch (e) {}
+  state.startOffset = 0;
+  applyRoute(ROUTE, false);
+}
+
 /* ---------- Leaflet map ---------- */
 let map, startMarker, segLayer;
 function initMap() {
@@ -423,7 +514,7 @@ function initMap() {
   L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
     attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 20,
   }).addTo(map);
-  L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
+  baseLine = L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
   map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
   segLayer = L.layerGroup().addTo(map);
   map.on("click", e => {
@@ -547,10 +638,10 @@ function renderRoute() {
   renderOutput();
 }
 function renderOutput() {
-  document.getElementById("routeName").textContent = ROUTE.name + (ROUTE.isLoop ? " · loop" : "");
+  document.getElementById("routeName").textContent = ACTIVE.name + (ACTIVE.isLoop ? " · loop" : "");
   document.getElementById("routeStats").innerHTML = [
-    ["Route length", `${ROUTE.totalDistKm} km · ${ROUTE.totalDistMi} mi`],
-    ["Elevation", `+${ROUTE.ascentM} / −${ROUTE.descentM} m`],
+    ["Route length", `${ACTIVE.totalDistKm} km · ${ACTIVE.totalDistMi} mi`],
+    ["Elevation", `+${ACTIVE.ascentM} / −${ACTIVE.descentM} m`],
     ["Workout total", `${(state.segments.reduce((a, s) => a + (+s.len || 0), 0) / 1000).toFixed(2)} km`],
   ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
@@ -614,7 +705,7 @@ function renderOutput() {
   if (isFinite(wd) && wd > 0) envNote += ` <b>Wind</b> ${wd} mph from ${dirLabel(parseFloat(state.cond.windDir))}: the 🌡 tag folds in heat + the headwind/tailwind for each segment's heading (headwind costs more than the matching tailwind gives back).`;
   document.getElementById("routeNote").innerHTML =
     `Each segment's <b class="tgt">target pace</b> is the flat Runna pace for that effort, adjusted for the climb/descent it actually covers (capped Minetti grade-cost model — downhill benefit floored at ~20% faster, uphill penalty capped where running becomes a hike). ` +
-    `Run uphill segments slower and downhills faster to hold steady effort. “↩” means the segment wrapped past the start/finish of the ${ROUTE.totalDistKm} km loop.` + envNote;
+    `Run uphill segments slower and downhills faster to hold steady effort. “↩” means the segment wrapped past the start/finish of the ${ACTIVE.totalDistKm} km ${ACTIVE.isLoop ? "loop" : "route"}.` + envNote;
 
   if (map) drawOverlays();
 }
@@ -768,9 +859,56 @@ document.getElementById("clearSeg").addEventListener("click", () => { state.segm
   });
 })();
 
+// restore a previously-uploaded route (if any) before the map draws
+(() => {
+  try {
+    const raw = localStorage.getItem(ROUTE_KEY);
+    if (raw) {
+      const r = JSON.parse(raw);
+      if (r && Array.isArray(r.track) && r.track.length > 1) { ACTIVE = r; T = r.track; TOTAL = r.totalDistM; }
+    }
+  } catch (e) {}
+})();
+
 initMap();
 renderTable();
 renderRoute();
+
+// GPX upload / reset wiring
+(() => {
+  const fileInput = document.getElementById("gpxFile");
+  const btn = document.getElementById("gpxBtn");
+  const resetBtn = document.getElementById("gpxReset");
+  const statusEl = document.getElementById("gpxStatus");
+  resetBtn.hidden = !ACTIVE.custom;
+  if (ACTIVE.custom) { statusEl.textContent = `Custom route: “${ACTIVE.name}” — ${ACTIVE.totalDistKm} km`; statusEl.style.color = "var(--muted)"; }
+  btn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const f = fileInput.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const r = buildRouteFromGpx(String(reader.result), f.name.replace(/\.gpx$/i, ""));
+        state.startOffset = 0;
+        applyRoute(r, true);
+        statusEl.textContent = `Loaded “${r.name}” — ${r.totalDistKm} km · +${r.ascentM}/−${r.descentM} m`
+          + (r.hasEle ? "" : " · ⚠ no elevation in file (treated as flat)");
+        statusEl.style.color = r.hasEle ? "var(--muted)" : "#fbbf24";
+      } catch (e) {
+        statusEl.textContent = "Couldn’t read that GPX: " + e.message;
+        statusEl.style.color = "#f87171";
+      }
+      fileInput.value = "";
+    };
+    reader.onerror = () => { statusEl.textContent = "Couldn’t read the file."; statusEl.style.color = "#f87171"; };
+    reader.readAsText(f);
+  });
+  resetBtn.addEventListener("click", () => {
+    clearCustomRoute();
+    statusEl.textContent = "Back to the default Central Park route.";
+    statusEl.style.color = "var(--muted)";
+  });
+})();
 </script>
 </body>
 </html>
