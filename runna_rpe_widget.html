@@ -178,7 +178,8 @@
         <div class="field"><label for="condWindDir">Wind from</label><select id="condWindDir"></select></div>
       </div>
       <div class="seg-actions">
-        <button id="condFetch" class="btn-accent">Auto-fetch for this route</button>
+        <button id="condGeo" class="btn-accent">📍 Use my location</button>
+        <button id="condFetch">Weather at route start</button>
         <button id="condClear">Clear</button>
         <span id="condStatus" class="cond-sum"></span>
       </div>
@@ -743,26 +744,62 @@ document.getElementById("clearSeg").addEventListener("click", () => { state.segm
   }
   [tEl, dEl, wEl].forEach(el => el.addEventListener("input", commit));
   dirEl.addEventListener("change", commit);
+
+  function showStatus(label) { statusEl.textContent = label; statusEl.style.color = "var(--muted)"; }
+  // restore last fetch provenance on reload
+  if (state.cond && state.cond.wxNote) showStatus(state.cond.wxNote);
+
+  // shared Open-Meteo fetch → fills temp/dew/wind for any lat/lon
+  async function fetchWx(lat, lon, where) {
+    statusEl.style.color = "var(--muted)";
+    statusEl.textContent = `Fetching weather for ${where}…`;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,dew_point_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("weather service error");
+    const c = (await r.json()).current;
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const note = `${Math.round(c.temperature_2m)}° · ${where} · ${time}`;
+    state.cond = {
+      tempF: String(Math.round(c.temperature_2m)),
+      dewF: String(Math.round(c.dew_point_2m)),
+      windMph: String(Math.round(c.wind_speed_10m)),
+      windDir: String(Math.round(c.wind_direction_10m / 22.5) % 16 * 22.5),
+      wxNote: note,
+    };
+    save(); syncFromState(); renderRoute();
+    showStatus(note);
+  }
+
   document.getElementById("condClear").addEventListener("click", () => {
     state.cond = defaults().cond; save(); syncFromState(); renderRoute(); statusEl.textContent = "";
   });
   document.getElementById("condFetch").addEventListener("click", async () => {
-    const [lat, lon] = [T[0][2], T[0][3]];
-    statusEl.textContent = "Fetching…";
-    try {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,dew_point_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`;
-      const r = await fetch(url); const j = await r.json(); const c = j.current;
-      state.cond = {
-        tempF: String(Math.round(c.temperature_2m)),
-        dewF: String(Math.round(c.dew_point_2m)),
-        windMph: String(Math.round(c.wind_speed_10m)),
-        windDir: String(Math.round(c.wind_direction_10m / 22.5) % 16 * 22.5),
-      };
-      save(); syncFromState(); renderRoute();
-      statusEl.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    } catch (e) { statusEl.textContent = "Fetch failed — enter manually."; }
+    try { await fetchWx(T[0][2], T[0][3], "route start"); }
+    catch (e) { statusEl.style.color = "#f87171"; statusEl.textContent = "Fetch failed — enter manually."; }
   });
+  document.getElementById("condGeo").addEventListener("click", () => {
+    if (!navigator.geolocation) { statusEl.style.color = "#f87171"; statusEl.textContent = "Geolocation not supported — use route start instead."; return; }
+    statusEl.style.color = "var(--muted)";
+    statusEl.textContent = "Getting your location…";
+    navigator.geolocation.getCurrentPosition(
+      async pos => {
+        try { await fetchWx(pos.coords.latitude, pos.coords.longitude, "your location"); }
+        catch (e) { statusEl.style.color = "#f87171"; statusEl.textContent = "Weather fetch failed — try again."; }
+      },
+      err => {
+        statusEl.style.color = "#f87171";
+        statusEl.textContent = err.code === err.PERMISSION_DENIED
+          ? "Location blocked — allow it or use route start." : "Couldn’t get your location.";
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+    );
+  });
+
   syncFromState();
+  // auto-fetch live weather for the route on first load if nothing's set yet
+  if (!state.cond.tempF && !state.cond.dewF) {
+    fetchWx(T[0][2], T[0][3], "route start").catch(() => { statusEl.textContent = ""; });
+  }
 })();
 
 /* ---------- interval-set builder ---------- */
