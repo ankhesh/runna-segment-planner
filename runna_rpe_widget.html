@@ -58,7 +58,8 @@
 
   .route { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 22px; }
   .route-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
-  .route-actions { display: flex; gap: 8px; align-items: center; }
+  .route-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .route-actions select { background: var(--card2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; max-width: 240px; }
   #map { width: 100%; height: 360px; border-radius: 12px; border: 1px solid var(--line); }
   .leaflet-container { background: #0b0d11; }
   .route-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 14px 0; }
@@ -155,9 +156,10 @@
     <div class="route-head">
       <h2 id="routeName">Route</h2>
       <div class="route-actions">
+        <select id="routeSelect" title="Switch route"></select>
         <input id="gpxFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
-        <button id="gpxBtn" class="btn-accent">Upload GPX</button>
-        <button id="gpxReset" hidden>Use default route</button>
+        <button id="gpxBtn" class="btn-accent">+ Add GPX</button>
+        <button id="routeDelete" hidden>Delete</button>
       </div>
     </div>
     <div id="gpxStatus" class="cond-sum" style="margin:-4px 0 10px"></div>
@@ -429,7 +431,6 @@ function windMultSeg(offset, len, baseSec) {
 /* ---------- custom GPX upload (parsed in-browser) ---------- */
 // Mirrors parse_gpx.js so an uploaded route gets the same capped-Minetti
 // equivalent-distance track the built-in route uses.
-const ROUTE_KEY = "runnaSegmentPlanner.route";
 function haversineM(a, b) {
   const R = 6371000, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
@@ -486,25 +487,85 @@ function buildRouteFromGpx(text, fallbackName) {
   };
 }
 
+/* ---------- route library (default + saved uploads) ---------- */
+const ROUTES_KEY = "runnaSegmentPlanner.routes";   // array of custom routes
+const ACTIVE_KEY = "runnaSegmentPlanner.activeRoute"; // id of active route
+const LEGACY_ROUTE_KEY = "runnaSegmentPlanner.route"; // old single-route key (migrated)
+let nextRouteN = 1;                                 // disambiguates ids within a session
+if (!ROUTE.id) { ROUTE.id = "default"; ROUTE.custom = false; }
+
+function saveLibrary(lib) { try { localStorage.setItem(ROUTES_KEY, JSON.stringify(lib)); } catch (e) {} }
+function loadLibrary() {
+  let lib = [];
+  try { lib = JSON.parse(localStorage.getItem(ROUTES_KEY) || "[]"); } catch (e) {}
+  if (!Array.isArray(lib)) lib = [];
+  // one-time migration of the old single custom route into the library
+  try {
+    const legacy = localStorage.getItem(LEGACY_ROUTE_KEY);
+    if (legacy) {
+      const r = JSON.parse(legacy);
+      if (r && Array.isArray(r.track) && r.track.length > 1 &&
+          !lib.some(x => x.name === r.name && x.totalDistM === r.totalDistM)) {
+        if (!r.id) r.id = "r" + (nextRouteN++);
+        lib.push(r);
+      }
+      localStorage.removeItem(LEGACY_ROUTE_KEY);
+      saveLibrary(lib);
+    }
+  } catch (e) {}
+  return lib.filter(r => r && Array.isArray(r.track) && r.track.length > 1);
+}
+let LIBRARY = loadLibrary();
+LIBRARY.forEach(r => { if (!r.id) r.id = "r" + (nextRouteN++); });
+function allRoutes() { return [ROUTE, ...LIBRARY]; }
+function routeById(id) { return allRoutes().find(r => r.id === id) || ROUTE; }
+
 let baseLine = null;
-function applyRoute(r, persist) {
+function drawBase() {
+  if (!map) return;
+  const latlngs = T.map(t => [t[2], t[3]]);
+  if (baseLine) baseLine.remove();
+  baseLine = L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
+  map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
+}
+function renderRouteSelect() {
+  const sel = document.getElementById("routeSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+  allRoutes().forEach(r => {
+    const tag = r.id === "default" ? " · default" : "";
+    sel.appendChild(new Option(`${r.name} · ${r.totalDistMi} mi${tag}`, r.id));
+  });
+  sel.value = ACTIVE.id;
+  const del = document.getElementById("routeDelete");
+  if (del) del.hidden = ACTIVE.id === "default";
+}
+function applyRoute(r) {                 // swap geometry + redraw, no persistence
   ACTIVE = r; T = r.track; TOTAL = r.totalDistM;
   if (state.startOffset > TOTAL) state.startOffset = 0;
-  if (map) {
-    const latlngs = T.map(t => [t[2], t[3]]);
-    if (baseLine) baseLine.remove();
-    baseLine = L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
-    map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
-  }
-  if (persist) { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(r)); } catch (e) {} }
-  const resetBtn = document.getElementById("gpxReset");
-  if (resetBtn) resetBtn.hidden = !r.custom;
+  drawBase();
+  renderRouteSelect();
   save(); renderRoute();
 }
-function clearCustomRoute() {
-  try { localStorage.removeItem(ROUTE_KEY); } catch (e) {}
-  state.startOffset = 0;
-  applyRoute(ROUTE, false);
+function setActiveRoute(id, resetStart) {
+  const r = routeById(id);
+  if (resetStart) state.startOffset = 0;
+  try { localStorage.setItem(ACTIVE_KEY, r.id); } catch (e) {}
+  applyRoute(r);
+}
+function addRouteToLibrary(r) {
+  r.id = "r" + (nextRouteN++);
+  r.custom = true;
+  LIBRARY.push(r);
+  saveLibrary(LIBRARY);
+  setActiveRoute(r.id, true);
+}
+function deleteRoute(id) {
+  if (id === "default") return;
+  const wasActive = ACTIVE.id === id;
+  LIBRARY = LIBRARY.filter(r => r.id !== id);
+  saveLibrary(LIBRARY);
+  setActiveRoute(wasActive ? "default" : ACTIVE.id, wasActive);
 }
 
 /* ---------- Leaflet map ---------- */
@@ -896,29 +957,36 @@ document.getElementById("clearSeg").addEventListener("click", () => { state.segm
   });
 })();
 
-// restore a previously-uploaded route (if any) before the map draws
+// restore the active route from the library before the map draws
 (() => {
-  try {
-    const raw = localStorage.getItem(ROUTE_KEY);
-    if (raw) {
-      const r = JSON.parse(raw);
-      if (r && Array.isArray(r.track) && r.track.length > 1) { ACTIVE = r; T = r.track; TOTAL = r.totalDistM; }
-    }
-  } catch (e) {}
+  let activeId = "default";
+  try { activeId = localStorage.getItem(ACTIVE_KEY) || "default"; } catch (e) {}
+  const r = routeById(activeId);
+  ACTIVE = r; T = r.track; TOTAL = r.totalDistM;
 })();
 
 initMap();
+renderRouteSelect();
 renderTable();
 renderRoute();
 
-// GPX upload / reset wiring
+// route library wiring: switch / add GPX / delete
 (() => {
   const fileInput = document.getElementById("gpxFile");
   const btn = document.getElementById("gpxBtn");
-  const resetBtn = document.getElementById("gpxReset");
+  const sel = document.getElementById("routeSelect");
+  const del = document.getElementById("routeDelete");
   const statusEl = document.getElementById("gpxStatus");
-  resetBtn.hidden = !ACTIVE.custom;
-  if (ACTIVE.custom) { statusEl.textContent = `Custom route: “${ACTIVE.name}” — ${ACTIVE.totalDistKm} km`; statusEl.style.color = "var(--muted)"; }
+  const show = (msg, color) => { statusEl.textContent = msg; statusEl.style.color = color || "var(--muted)"; };
+
+  if (ACTIVE.custom) show(`Route: “${ACTIVE.name}” — ${ACTIVE.totalDistKm} km`);
+
+  sel.addEventListener("change", () => {
+    setActiveRoute(sel.value, true);
+    show(ACTIVE.custom
+      ? `Switched to “${ACTIVE.name}” — ${ACTIVE.totalDistKm} km`
+      : "Default Central Park route.");
+  });
   btn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     const f = fileInput.files[0]; if (!f) return;
@@ -926,24 +994,24 @@ renderRoute();
     reader.onload = () => {
       try {
         const r = buildRouteFromGpx(String(reader.result), f.name.replace(/\.gpx$/i, ""));
-        state.startOffset = 0;
-        applyRoute(r, true);
-        statusEl.textContent = `Loaded “${r.name}” — ${r.totalDistKm} km · +${r.ascentM}/−${r.descentM} m`
-          + (r.hasEle ? "" : " · ⚠ no elevation in file (treated as flat)");
-        statusEl.style.color = r.hasEle ? "var(--muted)" : "#fbbf24";
+        addRouteToLibrary(r);
+        show(`Added “${r.name}” — ${r.totalDistKm} km · +${r.ascentM}/−${r.descentM} m`
+          + (r.hasEle ? "" : " · ⚠ no elevation in file (treated as flat)"),
+          r.hasEle ? "var(--muted)" : "#fbbf24");
       } catch (e) {
-        statusEl.textContent = "Couldn’t read that GPX: " + e.message;
-        statusEl.style.color = "#f87171";
+        show("Couldn’t read that GPX: " + e.message, "#f87171");
       }
       fileInput.value = "";
     };
-    reader.onerror = () => { statusEl.textContent = "Couldn’t read the file."; statusEl.style.color = "#f87171"; };
+    reader.onerror = () => show("Couldn’t read the file.", "#f87171");
     reader.readAsText(f);
   });
-  resetBtn.addEventListener("click", () => {
-    clearCustomRoute();
-    statusEl.textContent = "Back to the default Central Park route.";
-    statusEl.style.color = "var(--muted)";
+  del.addEventListener("click", () => {
+    if (ACTIVE.id === "default") return;
+    const name = ACTIVE.name;
+    if (!confirm(`Delete saved route “${name}”?`)) return;
+    deleteRoute(ACTIVE.id);
+    show(`Deleted “${name}”. Now on ${ACTIVE.name}.`);
   });
 })();
 </script>
