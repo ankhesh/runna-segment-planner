@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Runna Pace → Grade-Adjusted Segment Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="route_data.js"></script>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --card2: #1d212b; --line: #2a2f3a;
+    --text: #e7eaf0; --muted: #9aa3b2; --accent: #4ade80; --accent2: #38bdf8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px 16px; -webkit-font-smoothing: antialiased;
+  }
+  .widget { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.3px; }
+  h2 { font-size: 16px; margin: 0; letter-spacing: -0.2px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .controls {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+    margin-bottom: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px;
+  }
+  .field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 6px; }
+  .field input, .field select {
+    width: 100%; background: var(--card2); border: 1px solid var(--line); border-radius: 9px;
+    color: var(--text); padding: 9px 10px; font-size: 15px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent2); }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  th, td { padding: 10px 12px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); background: var(--card2); }
+  tr:last-child td { border-bottom: none; }
+  .type { font-weight: 600; }
+  .type small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .pace-input {
+    width: 62px; background: var(--card2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); padding: 7px 8px; font-size: 14px; text-align: center; outline: none;
+  }
+  .pace-input:focus { border-color: var(--accent2); }
+  .pace-input.bad { border-color: #ef4444; }
+  .rpe { display: inline-block; min-width: 30px; text-align: center; font-weight: 700; padding: 3px 8px; border-radius: 7px; color: #0f1115; }
+  .hr { font-variant-numeric: tabular-nums; }
+  .hr small { color: var(--muted); }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 14px; line-height: 1.5; }
+  details { margin-bottom: 18px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
+  button {
+    background: var(--card2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 9px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent2); }
+  .btn-accent { background: var(--accent2); color: #06212e; border-color: var(--accent2); font-weight: 600; }
+
+  .route { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 22px; }
+  .route-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+  #map { width: 100%; height: 360px; border-radius: 12px; border: 1px solid var(--line); }
+  .leaflet-container { background: #0b0d11; }
+  .route-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 14px 0; }
+  .stat { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+  .stat .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .stat .v { font-size: 15px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .start-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--card2); border: 1px dashed var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 13px;
+  }
+  .start-bar .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px #4ade8044; }
+  .seg-builder { margin-bottom: 14px; }
+  .seg-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .seg-row .idx { width: 22px; height: 22px; flex: none; border-radius: 50%; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; color: #0f1115; }
+  .seg-row input { width: 90px; background: var(--card2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; text-align: center; }
+  .seg-row select { background: var(--card2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; }
+  .seg-row .unit { color: var(--muted); font-size: 12px; }
+  .seg-row input.seg-pace { width: 72px; }
+  .seg-row input.bad { border-color: #ef4444; }
+  .seg-mode { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+  .seg-mode button { background: var(--card2); border: none; color: var(--muted); padding: 7px 11px; font-size: 12px; cursor: pointer; }
+  .seg-mode button + button { border-left: 1px solid var(--line); }
+  .seg-mode button.on { background: #2563eb; color: #fff; }
+  .seg-eff-tag { color: var(--muted); font-size: 12px; }
+  .set-builder { margin-top: 10px; padding: 12px; background: var(--card2); border: 1px solid var(--line); border-radius: 10px; }
+  .set-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .set-row + .set-row { margin-top: 10px; }
+  .set-row input[type=number] { width: 72px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; text-align: center; outline: none; }
+  .set-row select { background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; }
+  .set-row .unit { color: var(--muted); font-size: 12px; }
+  .set-chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin-right: auto; }
+  .set-hint { color: var(--muted); font-size: 12px; }
+  .cond { margin-bottom: 14px; background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+  .cond > summary { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; }
+  .cond > summary::-webkit-details-marker { display: none; }
+  .cond-sum { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
+  .cond-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0; }
+  .cond-grid .field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .cond-grid .field input, .cond-grid .field select { width: 100%; box-sizing: border-box; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; }
+  @media (max-width: 560px) { .cond-grid { grid-template-columns: repeat(2, 1fr); } }
+  .set-leg { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .set-leg .lg { width: 18px; color: var(--muted); font-size: 12px; text-align: right; }
+  .set-leg input[type=number] { width: 72px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; text-align: center; outline: none; }
+  .set-leg select { background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; }
+  .set-leg .unit { color: var(--muted); font-size: 12px; }
+  .set-leg input.leg-pace { width: 72px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; text-align: center; outline: none; }
+  .set-leg input.leg-pace.bad { border-color: #ef4444; }
+  .set-leg .rm { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 0 6px; }
+  .set-leg .rm:hover { color: #ef4444; }
+  .seg-row .rm { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 0 6px; }
+  .seg-row .rm:hover { color: #ef4444; }
+  .seg-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .out td, .out th { padding: 9px 11px; font-variant-numeric: tabular-nums; }
+  .out tfoot td { font-weight: 700; background: var(--card2); border-top: 2px solid var(--line); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+  .tgt { font-weight: 700; color: var(--accent); }
+  .grade-up { color: #fb923c; } .grade-dn { color: #38bdf8; }
+</style>
+</head>
+<body>
+<div class="widget">
+  <h1>Grade-Adjusted Segment Planner</h1>
+  <p class="sub">Pick a start point on the map, add your workout segments (any length), and get the target pace for each — adjusted to the actual hills it covers along the route. Paces come from your Runna run types below.</p>
+
+  <details>
+    <summary>▸ My Runna paces, RPE &amp; heart-rate zones (edit here — feeds the planner)</summary>
+    <div class="controls">
+      <div class="field">
+        <label for="maxhr">Max HR (bpm)</label>
+        <input id="maxhr" type="number" min="120" max="230" placeholder="e.g. 190">
+      </div>
+      <div class="field">
+        <label for="resthr">Resting HR (bpm)</label>
+        <input id="resthr" type="number" min="30" max="120" placeholder="e.g. 50">
+      </div>
+      <div class="field">
+        <label for="hrmethod">HR zone method</label>
+        <select id="hrmethod">
+          <option value="hrr">% Heart-rate reserve (Karvonen)</option>
+          <option value="max">% Max HR</option>
+        </select>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Run type</th><th>Pace /km (faster–slower)</th><th>RPE</th><th>Target HR</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="seg-actions"><button id="reset">Reset to my Garmin data</button></div>
+  </details>
+
+  <div class="route">
+    <div class="route-head"><h2 id="routeName">Route</h2></div>
+    <div id="map"></div>
+    <div id="routeStats" class="route-stats"></div>
+
+    <div class="start-bar">
+      <span class="dot"></span>
+      <span id="startText">Click the map to set your start point.</span>
+    </div>
+
+    <details id="condPanel" class="cond">
+      <summary>Conditions — heat &amp; wind <span id="condSummary" class="cond-sum"></span></summary>
+      <div class="cond-grid">
+        <div class="field"><label for="condTemp">Temp (°F)</label><input id="condTemp" type="number" placeholder="e.g. 72"></div>
+        <div class="field"><label for="condDew">Dew point (°F)</label><input id="condDew" type="number" placeholder="e.g. 60"></div>
+        <div class="field"><label for="condWind">Wind (mph)</label><input id="condWind" type="number" min="0" placeholder="e.g. 10"></div>
+        <div class="field"><label for="condWindDir">Wind from</label><select id="condWindDir"></select></div>
+      </div>
+      <div class="seg-actions">
+        <button id="condFetch" class="btn-accent">Auto-fetch for this route</button>
+        <button id="condClear">Clear</button>
+        <span id="condStatus" class="cond-sum"></span>
+      </div>
+    </details>
+
+    <div class="seg-builder">
+      <div id="segRows"></div>
+      <div class="seg-actions">
+        <button id="addSeg" class="btn-accent">+ Add segment</button>
+        <button id="addSetBtn">+ Interval set</button>
+        <button id="clearSeg">Clear all</button>
+      </div>
+      <div id="setBuilder" class="set-builder" hidden>
+        <div class="set-row">
+          <span class="unit">Repeat</span>
+          <input id="setReps" type="number" min="1" step="1" value="6">
+          <span class="unit">× this sequence of legs:</span>
+        </div>
+        <div id="setLegs"></div>
+        <div class="set-row">
+          <button id="setAddLeg">+ leg</button>
+        </div>
+        <div class="set-row">
+          <span class="unit">then recovery</span>
+          <input id="setRec" type="number" min="0" step="10" value="90">
+          <div id="setRecUnit" class="seg-mode" data-unit="s">
+            <button type="button" data-unit="s" class="on">sec</button>
+            <button type="button" data-unit="m">m</button>
+          </div>
+          <span class="unit">@</span>
+          <select id="setRecEff"></select>
+          <span id="setRecHint" class="set-hint"></span>
+        </div>
+        <div class="set-row">
+          <label class="set-chk"><input id="setTrailRec" type="checkbox"> recovery after last rep</label>
+          <button id="setAdd" class="btn-accent">Add set</button>
+          <button id="setCancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <table class="out">
+      <thead>
+        <tr><th>#</th><th>Effort</th><th>From → To</th><th>Length</th><th>Terrain</th><th>Adj.</th><th>Target pace</th><th>Time</th></tr>
+      </thead>
+      <tbody id="segOut"></tbody>
+      <tfoot id="segFoot"></tfoot>
+    </table>
+    <p class="foot" id="routeNote"></p>
+  </div>
+</div>
+
+<script>
+const RUN_TYPES = [
+  { name: "Recovery",      note: "shuffle, fully conversational", rpe: "1–2", rpeColor: "#86efac", hrLo: 0.50, hrHi: 0.60, def: ["6:50", "7:30"] },
+  { name: "Easy",          note: "comfortable, chatty",          rpe: "3–4", rpeColor: "#a3e635", hrLo: 0.60, hrHi: 0.70, def: ["6:00", "6:40"] },
+  { name: "Steady",        note: "controlled, a few words",      rpe: "5",   rpeColor: "#facc15", hrLo: 0.70, hrHi: 0.78, def: ["5:35", "6:00"] },
+  { name: "Marathon",      note: "comfortably hard",             rpe: "6",   rpeColor: "#fbbf24", hrLo: 0.76, hrHi: 0.84, def: ["5:15", "5:35"] },
+  { name: "Threshold",     note: "tempo, ~1hr race effort",      rpe: "7",   rpeColor: "#fb923c", hrLo: 0.83, hrHi: 0.90, def: ["4:55", "5:15"] },
+  { name: "10K",           note: "hard, short phrases only",     rpe: "7–8", rpeColor: "#f97316", hrLo: 0.86, hrHi: 0.92, def: ["4:45", "4:55"] },
+  { name: "5K / Interval", note: "very hard, no talking",        rpe: "8–9", rpeColor: "#f87171", hrLo: 0.91, hrHi: 0.97, def: ["4:25", "4:45"] },
+  { name: "Reps / Sprint", note: "near maximal",                 rpe: "9–10",rpeColor: "#ef4444", hrLo: 0.95, hrHi: 1.00, def: ["4:00", "4:20"] },
+];
+const TYPE = Object.fromEntries(RUN_TYPES.map(t => [t.name, t]));
+const STORE_KEY = "runnaSegmentPlanner.v1";
+
+function defaults() {
+  const paces = {};
+  RUN_TYPES.forEach(t => { paces[t.name] = { lo: t.def[0], hi: t.def[1] }; });
+  // Garmin-derived: resting HR 56 (today). Max HR 192 is an estimate (peak avg
+  // HR seen was 180 on a hard 5K). Pace ranges from executed Runna runs.
+  return {
+    maxhr: "192", resthr: "56", hrmethod: "hrr", paces,
+    startOffset: 0,
+    cond: { tempF: "", dewF: "", windMph: "", windDir: "" },
+    segments: [
+      { len: 2000, effort: "Easy" },
+      { len: 1000, effort: "Threshold" },
+      { len: 1000, effort: "Easy" },
+    ],
+  };
+}
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(STORE_KEY)); if (s && s.paces && s.segments) { if (!s.cond) s.cond = defaults().cond; return s; } } catch (e) {}
+  return defaults();
+}
+function save() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+let state = load();
+
+/* ---------- pace + HR helpers ---------- */
+function paceToSec(v) { const m = /^(\d{1,2}):([0-5]\d)$/.exec(v || ""); return m ? +m[1] * 60 + +m[2] : null; }
+function secToPace(s) { s = Math.round(s); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+function fmtClock(s) { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); }
+function isValidPace(v) { return /^\d{1,2}:[0-5]\d$/.test(v); }
+function basePaceSec(effort) {
+  const p = state.paces[effort] || {}; const lo = paceToSec(p.lo), hi = paceToSec(p.hi);
+  return (lo && hi) ? (lo + hi) / 2 : (lo || hi || null);
+}
+// Given a flat pace (sec/km), find the Runna effort whose band it falls in
+// (or the nearest band by midpoint) — used to label a manually-typed speed.
+function effortForPace(sec) {
+  if (!sec) return null;
+  let best = null, bestDist = Infinity;
+  for (const t of RUN_TYPES) {
+    const p = state.paces[t.name] || {}; const lo = paceToSec(p.lo), hi = paceToSec(p.hi);
+    if (lo == null && hi == null) continue;
+    const fast = Math.min(lo ?? hi, hi ?? lo), slow = Math.max(lo ?? hi, hi ?? lo);
+    if (sec >= fast && sec <= slow) return t.name;
+    const dist = sec < fast ? fast - sec : sec - slow;
+    if (dist < bestDist) { bestDist = dist; best = t.name; }
+  }
+  return best;
+}
+function hrRange(fLo, fHi) {
+  const max = parseInt(state.maxhr, 10), rest = parseInt(state.resthr, 10);
+  if (!max || max < 120) return null;
+  if (state.hrmethod === "hrr") { if (!rest || rest >= max) return null; const r = max - rest; return [Math.round(rest + r * fLo), Math.round(rest + r * fHi)]; }
+  return [Math.round(max * fLo), Math.round(max * fHi)];
+}
+
+/* ---------- route geometry along the GPX track ---------- */
+const T = ROUTE.track;            // [cumDistM, cumEquivM, lat, lon, ele]
+const TOTAL = ROUTE.totalDistM;
+function lerp(a, b, f) { return a + (b - a) * f; }
+function idxAt(distM) {            // first track index whose cumDist >= distM
+  let lo = 0, hi = T.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (T[mid][0] < distM) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function interp(distM, col) {      // interpolate any track column by distance
+  distM = Math.max(0, Math.min(TOTAL, distM));
+  const i = idxAt(distM); if (i === 0) return T[0][col];
+  const a = T[i - 1], b = T[i]; const span = b[0] - a[0] || 1;
+  return lerp(a[col], b[col], (distM - a[0]) / span);
+}
+function latLngAt(distM) { return [interp(distM, 2), interp(distM, 3)]; }
+// metrics over a forward range [a, a+len], 0<=a, len<=TOTAL, no wrap
+function walk(a, b) {
+  let equiv = 0, asc = 0, desc = 0;
+  const eqA = interp(a, 1), eqB = interp(b, 1); equiv = eqB - eqA;
+  for (let i = 1; i < T.length; i++) {
+    const s0 = T[i - 1][0], s1 = T[i][0];
+    const ov0 = Math.max(a, s0), ov1 = Math.min(b, s1);
+    if (ov1 <= ov0) continue;
+    const span = s1 - s0 || 1; const f = (ov1 - ov0) / span;
+    const de = T[i][4] - T[i - 1][4];
+    if (de > 0) asc += de * f; else desc += -de * f;
+  }
+  return { equiv, asc, desc, eleA: interp(a, 4), eleB: interp(b, 4) };
+}
+// segment starting at absolute offset, given length; wraps around the loop
+function segMetrics(offset, len) {
+  offset = ((offset % TOTAL) + TOTAL) % TOTAL;
+  const end = offset + len;
+  if (end <= TOTAL) { const w = walk(offset, end); return { ...w, from: offset, to: end }; }
+  const w1 = walk(offset, TOTAL), w2 = walk(0, end - TOTAL);
+  return { equiv: w1.equiv + w2.equiv, asc: w1.asc + w2.asc, desc: w1.desc + w2.desc, eleA: w1.eleA, eleB: w2.eleB, from: offset, to: end - TOTAL, wrapped: true };
+}
+function routeSlice(a, b) {        // [lat,lng] list along route from a..b (no wrap)
+  const out = [latLngAt(a)];
+  for (let i = 0; i < T.length; i++) { if (T[i][0] > a && T[i][0] < b) out.push([T[i][2], T[i][3]]); }
+  out.push(latLngAt(b)); return out;
+}
+function sliceWrapped(offset, len) {
+  offset = ((offset % TOTAL) + TOTAL) % TOTAL; const end = offset + len;
+  if (end <= TOTAL) return [routeSlice(offset, end)];
+  return [routeSlice(offset, TOTAL), routeSlice(0, end - TOTAL)];
+}
+
+/* ---------- environment: heat + wind ---------- */
+// Heat penalty combines TWO stresses that the old single "temp+dewpoint sum"
+// model conflated:
+//   1) HUMIDITY stress  — temp+dewpoint sum, the classic coaching chart. Captures
+//      impaired evaporative cooling: humid 85°F is far worse than dry 85°F.
+//   2) DRY-BULB stress  — raw air temperature alone. Above ~skin temperature the
+//      body GAINS heat from the air regardless of humidity, so there's a hard
+//      penalty for high absolute temps even in bone-dry air.
+// We take the larger of the two and add half the smaller, so dry heat (100°F /
+// low dew) and humid heat (90°F / 70°F dew) both register, and the brutal
+// hot+humid corner stacks. Fixes the prior bug where 100°F in dry NYC air barely
+// slowed the target because the sum was still modest.
+const HEAT_TBL = [[100,0],[110,0.5],[120,1],[130,2],[140,3],[150,4.5],[160,6],[170,8],[180,10],[200,13]];
+const DRY_TBL  = [[60,0],[70,1.5],[80,3.5],[90,7],[100,12.5],[110,18]];
+function interpTbl(tbl, x) {
+  if (x <= tbl[0][0]) return tbl[0][1];
+  for (let i = 1; i < tbl.length; i++) {
+    if (x <= tbl[i][0]) {
+      const [x0, p0] = tbl[i - 1], [x1, p1] = tbl[i];
+      return p0 + (p1 - p0) * (x - x0) / (x1 - x0);
+    }
+  }
+  return tbl[tbl.length - 1][1];
+}
+function heatMult() {
+  const t = parseFloat(state.cond.tempF), d = parseFloat(state.cond.dewF);
+  if (!isFinite(t) || !isFinite(d)) return 1;
+  const humid = interpTbl(HEAT_TBL, t + d);  // humidity-aware sum chart
+  const dry = interpTbl(DRY_TBL, t);          // raw dry-bulb temperature
+  const pct = Math.max(humid, dry) + 0.5 * Math.min(humid, dry);
+  return 1 + pct / 100;
+}
+function heatPct() { return Math.round((heatMult() - 1) * 1000) / 10; }
+const COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+function dirLabel(deg) { if (!isFinite(deg)) return "—"; return COMPASS[Math.round(deg / 22.5) % 16]; }
+
+// Bearing (deg from north) of travel from point A to point B.
+function bearing(la1, lo1, la2, lo2) {
+  const r = Math.PI / 180; la1 *= r; la2 *= r; const dLo = (lo2 - lo1) * r;
+  const y = Math.sin(dLo) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLo);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+// Air-resistance cost coefficient (J·s²·kg⁻¹·m⁻³) for the wind *delta* vs calm;
+// tuned so a 10 mph headwind ≈ +2-3% and 20 mph ≈ +6-7% at ~5:00/km, with
+// tailwind helping far less (asymmetric, like grade). C0 = flat metabolic cost.
+const AIR_K = 0.0017, C0 = 3.6;
+// Distance-weighted wind multiplier over [a,b] (no wrap) at running speed v (m/s).
+function windWalk(a, b, v, wMs, wFromDeg) {
+  let num = 0, den = 0;
+  for (let i = 1; i < T.length; i++) {
+    const s0 = T[i - 1][0], s1 = T[i][0];
+    const ov0 = Math.max(a, s0), ov1 = Math.min(b, s1);
+    if (ov1 <= ov0) continue;
+    const dlen = ov1 - ov0;
+    const brg = bearing(T[i - 1][2], T[i - 1][3], T[i][2], T[i][3]);
+    const head = wMs * Math.cos((wFromDeg - brg) * Math.PI / 180); // +head, -tail
+    const va = Math.max(0, v + head);
+    const mult = 1 + AIR_K * (va * va - v * v) / C0;
+    num += mult * dlen; den += dlen;
+  }
+  return den ? num / den : 1;
+}
+// Wind multiplier for a segment (handles wrap). base = flat pace sec/km.
+function windMultSeg(offset, len, baseSec) {
+  const w = parseFloat(state.cond.windMph), dir = parseFloat(state.cond.windDir);
+  if (!isFinite(w) || w <= 0 || !isFinite(dir) || !baseSec) return 1;
+  const wMs = w * 0.44704, v = 1000 / baseSec;
+  offset = ((offset % TOTAL) + TOTAL) % TOTAL; const end = offset + len;
+  if (end <= TOTAL) return windWalk(offset, end, v, wMs, dir);
+  const m1 = windWalk(offset, TOTAL, v, wMs, dir), m2 = windWalk(0, end - TOTAL, v, wMs, dir);
+  // length-weighted blend of the two parts
+  const l1 = TOTAL - offset, l2 = end - TOTAL;
+  return (m1 * l1 + m2 * l2) / (l1 + l2);
+}
+
+/* ---------- Leaflet map ---------- */
+let map, startMarker, segLayer;
+function initMap() {
+  const latlngs = T.map(t => [t[2], t[3]]);
+  map = L.map("map", { scrollWheelZoom: true });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 20,
+  }).addTo(map);
+  L.polyline(latlngs, { color: "#64748b", weight: 4, opacity: 0.7 }).addTo(map);
+  map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
+  segLayer = L.layerGroup().addTo(map);
+  map.on("click", e => {
+    // snap to nearest track point
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < T.length; i++) {
+      const d = map.distance(e.latlng, [T[i][2], T[i][3]]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    state.startOffset = T[best][0]; save(); renderRoute();
+  });
+}
+function drawOverlays() {
+  segLayer.clearLayers();
+  const [slat, slng] = latLngAt(state.startOffset);
+  startMarker = L.circleMarker([slat, slng], { radius: 8, color: "#0f1115", weight: 2, fillColor: "#4ade80", fillOpacity: 1 })
+    .addTo(segLayer).bindTooltip("START", { permanent: false });
+  let offset = state.startOffset;
+  state.segments.forEach((seg, i) => {
+    const len = +seg.len || 0; if (len <= 0) return;
+    const color = (TYPE[seg.effort] || {}).rpeColor || "#38bdf8";
+    sliceWrapped(offset, len).forEach(pts => {
+      L.polyline(pts, { color, weight: 6, opacity: 0.95 }).addTo(segLayer);
+    });
+    offset += len;
+    const [elat, elng] = latLngAt(offset);
+    L.circleMarker([elat, elng], { radius: 5, color: "#0f1115", weight: 2, fillColor: color, fillOpacity: 1 })
+      .addTo(segLayer).bindTooltip(`End seg ${i + 1}`, { permanent: false });
+  });
+}
+
+/* ---------- run-type table (in <details>) ---------- */
+const rowsEl = document.getElementById("rows");
+function renderTable() {
+  document.getElementById("maxhr").value = state.maxhr;
+  document.getElementById("resthr").value = state.resthr;
+  document.getElementById("hrmethod").value = state.hrmethod;
+  rowsEl.innerHTML = "";
+  RUN_TYPES.forEach(t => {
+    const tr = document.createElement("tr");
+    const tdType = document.createElement("td"); tdType.className = "type"; tdType.innerHTML = `${t.name}<small>${t.note}</small>`;
+    const tdPace = document.createElement("td");
+    const pace = state.paces[t.name] || { lo: "", hi: "" };
+    ["lo", "hi"].forEach((key, idx) => {
+      const inp = document.createElement("input"); inp.className = "pace-input"; inp.type = "text"; inp.placeholder = "m:ss"; inp.value = pace[key] || "";
+      inp.addEventListener("input", () => {
+        state.paces[t.name][key] = inp.value.trim();
+        inp.classList.toggle("bad", inp.value.trim() !== "" && !isValidPace(inp.value.trim()));
+        save(); renderRoute();
+      });
+      tdPace.appendChild(inp);
+      if (idx === 0) { const d = document.createElement("span"); d.style.cssText = "color:var(--muted);margin:0 5px;"; d.textContent = "–"; tdPace.appendChild(d); }
+    });
+    const tdRpe = document.createElement("td"); const r = document.createElement("span"); r.className = "rpe"; r.style.background = t.rpeColor; r.textContent = t.rpe; tdRpe.appendChild(r);
+    const tdHr = document.createElement("td"); tdHr.className = "hr"; const rng = hrRange(t.hrLo, t.hrHi);
+    tdHr.innerHTML = rng ? `${rng[0]}–${rng[1]} <small>bpm</small>` : `<small>enter HR</small>`;
+    tr.append(tdType, tdPace, tdRpe, tdHr); rowsEl.appendChild(tr);
+  });
+}
+
+/* ---------- segment builder ---------- */
+const segRowsEl = document.getElementById("segRows");
+function renderSegBuilder() {
+  segRowsEl.innerHTML = "";
+  state.segments.forEach((seg, i) => {
+    const mode = seg.mode === "pace" ? "pace" : "effort";
+    const effLabel = mode === "pace" ? effortForPace(paceToSec((seg.pace || "").trim())) : seg.effort;
+    const color = (TYPE[effLabel] || {}).rpeColor || "#38bdf8";
+    const row = document.createElement("div"); row.className = "seg-row";
+    const idx = document.createElement("span"); idx.className = "idx"; idx.style.background = color; idx.textContent = i + 1;
+    const len = document.createElement("input"); len.type = "number"; len.min = "50"; len.step = "50"; len.value = seg.len;
+    len.addEventListener("input", () => { state.segments[i].len = +len.value || 0; save(); renderOutput(); });
+    const unit = document.createElement("span"); unit.className = "unit"; unit.textContent = "m";
+
+    // mode toggle: Effort | Pace
+    const tog = document.createElement("div"); tog.className = "seg-mode";
+    [["effort", "Effort"], ["pace", "Pace"]].forEach(([val, txt]) => {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = txt;
+      if (mode === val) b.className = "on";
+      b.addEventListener("click", () => { state.segments[i].mode = val; save(); renderRoute(); });
+      tog.appendChild(b);
+    });
+
+    row.append(idx, len, unit, tog);
+
+    if (mode === "pace") {
+      const at = document.createElement("span"); at.className = "unit"; at.textContent = "@";
+      const pace = document.createElement("input"); pace.className = "seg-pace"; pace.type = "text";
+      pace.placeholder = secToPace(basePaceSec(seg.effort) || 360); pace.value = seg.pace || "";
+      pace.title = "Flat target pace for this segment (m:ss /km).";
+      const paceUnit = document.createElement("span"); paceUnit.className = "unit"; paceUnit.textContent = "/km";
+      const tag = document.createElement("span"); tag.className = "seg-eff-tag";
+      tag.textContent = effLabel ? "≈ " + effLabel : "";
+      pace.addEventListener("input", () => {
+        const v = pace.value.trim();
+        state.segments[i].pace = v;
+        pace.classList.toggle("bad", v !== "" && !isValidPace(v));
+        const eff = isValidPace(v) ? effortForPace(paceToSec(v)) : null;
+        tag.textContent = eff ? "≈ " + eff : "";
+        idx.style.background = (TYPE[eff] || {}).rpeColor || "#38bdf8";
+        save(); renderOutput();
+      });
+      row.append(at, pace, paceUnit, tag);
+    } else {
+      const sel = document.createElement("select");
+      RUN_TYPES.forEach(t => { const o = document.createElement("option"); o.value = t.name; o.textContent = t.name; sel.appendChild(o); });
+      sel.value = seg.effort;
+      sel.addEventListener("change", () => { state.segments[i].effort = sel.value; save(); renderRoute(); });
+      row.append(sel);
+    }
+
+    const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "×"; rm.title = "Remove";
+    rm.addEventListener("click", () => { state.segments.splice(i, 1); save(); renderRoute(); });
+    row.append(rm); segRowsEl.appendChild(row);
+  });
+}
+
+/* ---------- main render ---------- */
+function renderRoute() {
+  renderSegBuilder();
+  renderOutput();
+}
+function renderOutput() {
+  document.getElementById("routeName").textContent = ROUTE.name + (ROUTE.isLoop ? " · loop" : "");
+  document.getElementById("routeStats").innerHTML = [
+    ["Route length", `${ROUTE.totalDistKm} km · ${ROUTE.totalDistMi} mi`],
+    ["Elevation", `+${ROUTE.ascentM} / −${ROUTE.descentM} m`],
+    ["Workout total", `${(state.segments.reduce((a, s) => a + (+s.len || 0), 0) / 1000).toFixed(2)} km`],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const startKm = (state.startOffset / 1000).toFixed(2);
+  const [slat, slng] = latLngAt(state.startOffset);
+  document.getElementById("startText").innerHTML =
+    `Start @ <b>${startKm} km</b> along route &nbsp;<span style="color:var(--muted)">(${slat.toFixed(5)}, ${slng.toFixed(5)})</span> — click the map to move it.`;
+
+  const body = document.getElementById("segOut"); body.innerHTML = "";
+  const hMult = heatMult();
+  let offset = state.startOffset, totalTime = 0, totalLen = 0, anyPace = false;
+  state.segments.forEach((seg, i) => {
+    const len = +seg.len || 0; if (len <= 0) return;
+    const mode = seg.mode === "pace" ? "pace" : "effort";
+    let effortName, base;
+    if (mode === "pace") {
+      base = isValidPace((seg.pace || "").trim()) ? paceToSec(seg.pace.trim()) : null;
+      effortName = base ? effortForPace(base) : null;
+    } else {
+      effortName = seg.effort;
+      base = basePaceSec(seg.effort);
+    }
+    const t = TYPE[effortName] || {}; const color = t.rpeColor || "#38bdf8";
+    const effortCell = effortName ? (mode === "pace" ? `${effortName} <span class="seg-eff-tag">≈</span>` : effortName) : "—";
+    const m = segMetrics(offset, len);
+    const factor = m.equiv / len;
+    const wMult = windMultSeg(offset, len, base);
+    const envMult = hMult * wMult;
+    const tgt = base ? base * factor * envMult : null;
+    const segTime = tgt ? tgt * (len / 1000) : null;
+    if (tgt) { totalTime += segTime; anyPace = true; }
+    totalLen += len;
+    const adj = Math.round((factor - 1) * 100);
+    const adjStr = adj === 0 ? "—" : (adj > 0 ? `+${adj}%` : `${adj}%`);
+    const adjCls = adj > 0 ? "grade-up" : adj < 0 ? "grade-dn" : "";
+    const envPct = Math.round((envMult - 1) * 100);
+    const windPct = Math.round((wMult - 1) * 100);
+    const tip = `flat ${base ? secToPace(base) : "—"} · grade ${adjStr} · heat ${heatPct() > 0 ? "+" + heatPct() : heatPct()}% · wind ${windPct > 0 ? "+" + windPct : windPct}%`;
+    const envStr = envPct === 0 ? "" : ` <span class="${envPct > 0 ? "grade-up" : "grade-dn"}" style="font-size:11px">${envPct > 0 ? "+" : ""}${envPct}%🌡</span>`;
+    const fromKm = (m.from / 1000).toFixed(2), toKm = (m.to / 1000).toFixed(2);
+    body.innerHTML += `<tr title="${tip}">
+      <td><span class="swatch" style="background:${color}"></span>${i + 1}</td>
+      <td>${effortCell}</td>
+      <td>${fromKm}→${toKm} km${m.wrapped ? " ↩" : ""}</td>
+      <td>${len} m</td>
+      <td><span class="grade-up">↑${Math.round(m.asc)}</span> <span class="grade-dn">↓${Math.round(m.desc)}</span></td>
+      <td class="${adjCls}">${adjStr}</td>
+      <td class="tgt">${tgt ? secToPace(tgt) + " /km" : "—"}${envStr}</td>
+      <td>${segTime ? fmtClock(segTime) : "—"}</td>
+    </tr>`;
+    offset += len;
+  });
+  document.getElementById("segFoot").innerHTML =
+    `<tr><td colspan="3">Total</td><td>${(totalLen / 1000).toFixed(2)} km</td><td colspan="2"></td>
+      <td>${anyPace ? "avg " + secToPace(totalTime / (totalLen / 1000)) + " /km" : "—"}</td>
+      <td>${anyPace ? fmtClock(totalTime) : "—"}</td></tr>`;
+
+  let envNote = "";
+  const hp = heatPct(), wd = parseFloat(state.cond.windMph);
+  if (hp > 0) envNote += ` <b>Heat</b> (T ${state.cond.tempF}° + Dp ${state.cond.dewF}° = ${(+state.cond.tempF) + (+state.cond.dewF)}°F): +${hp}% on every pace.`;
+  if (isFinite(wd) && wd > 0) envNote += ` <b>Wind</b> ${wd} mph from ${dirLabel(parseFloat(state.cond.windDir))}: the 🌡 tag folds in heat + the headwind/tailwind for each segment's heading (headwind costs more than the matching tailwind gives back).`;
+  document.getElementById("routeNote").innerHTML =
+    `Each segment's <b class="tgt">target pace</b> is the flat Runna pace for that effort, adjusted for the climb/descent it actually covers (capped Minetti grade-cost model — downhill benefit floored at ~20% faster, uphill penalty capped where running becomes a hike). ` +
+    `Run uphill segments slower and downhills faster to hold steady effort. “↩” means the segment wrapped past the start/finish of the ${ROUTE.totalDistKm} km loop.` + envNote;
+
+  if (map) drawOverlays();
+}
+
+/* ---------- wiring ---------- */
+["maxhr", "resthr", "hrmethod"].forEach(k => {
+  document.getElementById(k).addEventListener("input", e => { state[k] = e.target.value; save(); renderTable(); renderRoute(); });
+});
+document.getElementById("reset").addEventListener("click", () => { state = defaults(); save(); renderTable(); renderRoute(); });
+document.getElementById("addSeg").addEventListener("click", () => { state.segments.push({ len: 1000, effort: "Easy" }); save(); renderRoute(); });
+document.getElementById("clearSeg").addEventListener("click", () => { state.segments = []; save(); renderRoute(); });
+
+/* ---------- conditions (heat + wind) ---------- */
+(() => {
+  const tEl = document.getElementById("condTemp"), dEl = document.getElementById("condDew"),
+        wEl = document.getElementById("condWind"), dirEl = document.getElementById("condWindDir"),
+        sumEl = document.getElementById("condSummary"), statusEl = document.getElementById("condStatus");
+  dirEl.appendChild(new Option("—", ""));
+  COMPASS.forEach((c, i) => dirEl.appendChild(new Option(`${c}`, String(i * 22.5))));
+
+  function syncFromState() {
+    tEl.value = state.cond.tempF || ""; dEl.value = state.cond.dewF || "";
+    wEl.value = state.cond.windMph || ""; dirEl.value = state.cond.windDir === "" ? "" : String(state.cond.windDir);
+    updateSummary();
+  }
+  function updateSummary() {
+    const bits = [];
+    if (state.cond.tempF !== "" && state.cond.dewF !== "") bits.push(`${state.cond.tempF}°/${state.cond.dewF}°dp`);
+    if (state.cond.windMph !== "" && +state.cond.windMph > 0) bits.push(`${state.cond.windMph}mph ${dirLabel(parseFloat(state.cond.windDir))}`);
+    sumEl.textContent = bits.length ? "· " + bits.join(" · ") : "· not set";
+  }
+  function commit() {
+    state.cond = { tempF: tEl.value.trim(), dewF: dEl.value.trim(), windMph: wEl.value.trim(), windDir: dirEl.value };
+    save(); updateSummary(); renderRoute();
+  }
+  [tEl, dEl, wEl].forEach(el => el.addEventListener("input", commit));
+  dirEl.addEventListener("change", commit);
+  document.getElementById("condClear").addEventListener("click", () => {
+    state.cond = defaults().cond; save(); syncFromState(); renderRoute(); statusEl.textContent = "";
+  });
+  document.getElementById("condFetch").addEventListener("click", async () => {
+    const [lat, lon] = [T[0][2], T[0][3]];
+    statusEl.textContent = "Fetching…";
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,dew_point_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`;
+      const r = await fetch(url); const j = await r.json(); const c = j.current;
+      state.cond = {
+        tempF: String(Math.round(c.temperature_2m)),
+        dewF: String(Math.round(c.dew_point_2m)),
+        windMph: String(Math.round(c.wind_speed_10m)),
+        windDir: String(Math.round(c.wind_direction_10m / 22.5) % 16 * 22.5),
+      };
+      save(); syncFromState(); renderRoute();
+      statusEl.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    } catch (e) { statusEl.textContent = "Fetch failed — enter manually."; }
+  });
+  syncFromState();
+})();
+
+/* ---------- interval-set builder ---------- */
+(() => {
+  const re = document.getElementById("setRecEff");
+  RUN_TYPES.forEach(t => re.appendChild(new Option(t.name, t.name)));
+  re.value = "Recovery";
+  const panel = document.getElementById("setBuilder");
+  const legsEl = document.getElementById("setLegs");
+  const recVal = document.getElementById("setRec"), recUnit = document.getElementById("setRecUnit"), recHint = document.getElementById("setRecHint");
+  let legs = [{ len: 300, mode: "effort", effort: "Threshold", pace: "" }, { len: 300, mode: "effort", effort: "10K", pace: "" }];
+
+  // recovery distance in metres (converts seconds via the recovery effort's pace)
+  function recMetres() {
+    const v = +recVal.value || 0; if (v <= 0) return 0;
+    if (recUnit.dataset.unit === "m") return Math.round(v);
+    const pace = basePaceSec(re.value); return pace ? Math.round(v / pace * 1000) : 0;
+  }
+  function updateRecHint() {
+    if (recUnit.dataset.unit === "s") { const m = recMetres(); recHint.textContent = m ? `≈ ${m} m @ ${re.value} pace` : ""; }
+    else { recHint.textContent = ""; }
+  }
+  function renderLegs() {
+    legsEl.innerHTML = "";
+    legs.forEach((lg, i) => {
+      const mode = lg.mode === "pace" ? "pace" : "effort";
+      const row = document.createElement("div"); row.className = "set-leg";
+      const tag = document.createElement("span"); tag.className = "lg"; tag.textContent = String.fromCharCode(97 + i);
+      const len = document.createElement("input"); len.type = "number"; len.min = "50"; len.step = "50"; len.value = lg.len;
+      len.addEventListener("input", () => { legs[i].len = +len.value || 0; });
+      const u1 = document.createElement("span"); u1.className = "unit"; u1.textContent = "m @";
+
+      const tog = document.createElement("div"); tog.className = "seg-mode";
+      [["effort", "Effort"], ["pace", "Pace"]].forEach(([val, txt]) => {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = txt;
+        if (mode === val) b.className = "on";
+        b.addEventListener("click", () => { legs[i].mode = val; renderLegs(); });
+        tog.appendChild(b);
+      });
+
+      const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "×"; rm.title = "Remove leg";
+      rm.addEventListener("click", () => { if (legs.length > 1) { legs.splice(i, 1); renderLegs(); } });
+
+      row.append(tag, len, u1, tog);
+      if (mode === "pace") {
+        const pace = document.createElement("input"); pace.className = "leg-pace"; pace.type = "text";
+        pace.placeholder = secToPace(basePaceSec(lg.effort) || 360); pace.value = lg.pace || "";
+        const u2 = document.createElement("span"); u2.className = "unit"; u2.textContent = "/km";
+        const tg = document.createElement("span"); tg.className = "set-hint";
+        const setTag = () => { const e = isValidPace((lg.pace || "").trim()) ? effortForPace(paceToSec(lg.pace.trim())) : null; tg.textContent = e ? "≈ " + e : ""; };
+        setTag();
+        pace.addEventListener("input", () => {
+          const v = pace.value.trim(); legs[i].pace = v;
+          pace.classList.toggle("bad", v !== "" && !isValidPace(v));
+          const e = isValidPace(v) ? effortForPace(paceToSec(v)) : null; tg.textContent = e ? "≈ " + e : "";
+        });
+        row.append(pace, u2, tg, rm);
+      } else {
+        const sel = document.createElement("select");
+        RUN_TYPES.forEach(t => sel.appendChild(new Option(t.name, t.name)));
+        sel.value = lg.effort;
+        sel.addEventListener("change", () => { legs[i].effort = sel.value; });
+        row.append(sel, rm);
+      }
+      legsEl.appendChild(row);
+    });
+  }
+  renderLegs(); updateRecHint();
+
+  recVal.addEventListener("input", updateRecHint);
+  recUnit.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    recUnit.dataset.unit = b.dataset.unit;
+    recUnit.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    updateRecHint();
+  }));
+  re.addEventListener("change", updateRecHint);
+  document.getElementById("setAddLeg").addEventListener("click", () => { legs.push({ len: 200, mode: "effort", effort: "Easy", pace: "" }); renderLegs(); });
+  document.getElementById("addSetBtn").addEventListener("click", () => { panel.hidden = !panel.hidden; });
+  document.getElementById("setCancel").addEventListener("click", () => { panel.hidden = true; });
+  document.getElementById("setAdd").addEventListener("click", () => {
+    const reps = Math.max(1, parseInt(document.getElementById("setReps").value, 10) || 1);
+    const work = legs.filter(l => l.len > 0);
+    if (!work.length) return;
+    const rec = recMetres(), recEff = re.value;
+    const trail = document.getElementById("setTrailRec").checked;
+    for (let r = 0; r < reps; r++) {
+      work.forEach(l => {
+        if (l.mode === "pace") state.segments.push({ len: l.len, mode: "pace", pace: l.pace || "", effort: l.effort });
+        else state.segments.push({ len: l.len, effort: l.effort });
+      });
+      if (rec > 0 && (trail || r < reps - 1)) state.segments.push({ len: rec, effort: recEff });
+    }
+    save(); renderRoute(); panel.hidden = true;
+  });
+})();
+
+initMap();
+renderTable();
+renderRoute();
+</script>
+</body>
+</html>
