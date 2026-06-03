@@ -58,6 +58,8 @@
 
   .route { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 22px; }
   .route-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+  .route-warn { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.4); color: #fbbf24; border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.5; margin: 10px 0; }
+  .route-warn b { color: #fde68a; }
   .route-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .route-actions select { background: var(--card2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px; font-size: 14px; outline: none; max-width: 240px; }
   #map { width: 100%; height: 360px; border-radius: 12px; border: 1px solid var(--line); }
@@ -165,6 +167,7 @@
     <div id="gpxStatus" class="cond-sum" style="margin:-4px 0 10px"></div>
     <div id="map"></div>
     <div id="routeStats" class="route-stats"></div>
+    <div id="routeWarn" class="route-warn" hidden></div>
 
     <div class="start-bar">
       <span class="dot"></span>
@@ -487,6 +490,33 @@ function buildRouteFromGpx(text, fallbackName) {
   };
 }
 
+// Grade transparency: the model integrates point-by-point, which is correct for
+// real hills but also amplifies elevation NOISE (a dead-flat noisy track can read
+// as +3-13% "hilly"). Compare the raw factor to one computed over a ~30 m grade
+// window: if they diverge, the file's elevation is noisy and hills are overstated.
+const SMOOTH_WIN_M = 30;
+function analyzeGrade(track) {
+  let dist = 0, rawEquiv = 0, smEquiv = 0;
+  for (let i = 1; i < track.length; i++) {
+    const d = track[i][0] - track[i - 1][0];
+    if (d <= 0) continue;
+    const deRaw = track[i][4] - track[i - 1][4];
+    // smoothed grade: elevation change over a window centred on this step
+    let lo = i - 1, hi = i;
+    while (lo > 0 && track[i - 1][0] - track[lo][0] < SMOOTH_WIN_M / 2) lo--;
+    while (hi < track.length - 1 && track[hi][0] - track[i][0] < SMOOTH_WIN_M / 2) hi++;
+    const span = track[hi][0] - track[lo][0] || d;
+    const gradeSm = (track[hi][4] - track[lo][4]) / span;
+    dist += d;
+    rawEquiv += d * gpxGradeMult(deRaw / d);
+    smEquiv += d * gpxGradeMult(gradeSm);
+  }
+  if (dist <= 0) return { rawFactor: 1, smoothFactor: 1, noisePct: 0 };
+  const rawFactor = rawEquiv / dist, smoothFactor = smEquiv / dist;
+  return { rawFactor, smoothFactor, noisePct: (rawFactor / smoothFactor - 1) * 100 };
+}
+function gradeInfo(r) { if (!r._grade) r._grade = analyzeGrade(r.track); return r._grade; }
+
 /* ---------- route library (default + saved uploads) ---------- */
 const ROUTES_KEY = "runnaSegmentPlanner.routes";   // array of custom routes
 const ACTIVE_KEY = "runnaSegmentPlanner.activeRoute"; // id of active route
@@ -701,11 +731,27 @@ function renderRoute() {
 }
 function renderOutput() {
   document.getElementById("routeName").textContent = ACTIVE.name + (ACTIVE.isLoop ? " · loop" : "");
+  const gi = gradeInfo(ACTIVE);
+  const gPct = Math.round((gi.rawFactor - 1) * 100);  // matches the per-segment pace math
   document.getElementById("routeStats").innerHTML = [
     ["Route length", `${ACTIVE.totalDistKm} km · ${ACTIVE.totalDistMi} mi`],
     ["Elevation", `+${ACTIVE.ascentM} / −${ACTIVE.descentM} m`],
+    ["Grade factor", `${gi.rawFactor.toFixed(3)}× · ${gPct >= 0 ? "+" : ""}${gPct}% vs flat`],
     ["Workout total", `${(state.segments.reduce((a, s) => a + (+s.len || 0), 0) / 1000).toFixed(2)} km`],
   ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  // noise warning: the paces use the raw factor; flag when it diverges from smoothed
+  const warnEl = document.getElementById("routeWarn");
+  if (gi.noisePct >= 2.5) {
+    warnEl.hidden = false;
+    warnEl.innerHTML = `⚠ Elevation data looks noisy. The Grade factor above (<b>${gi.rawFactor.toFixed(3)}×</b>) `
+      + `is what these paces use, but a 30 m-smoothed read is only <b>${gi.smoothFactor.toFixed(3)}×</b> — `
+      + `so phantom hills are likely overstating every target pace by ~<b>${Math.round(gi.noisePct)}%</b> `
+      + `(≈${Math.round(gi.noisePct * 3.6)} s/km at 6:00/km). Treat this route's paces as a touch slow; `
+      + `ask me to enable grade smoothing to correct it.`;
+  } else {
+    warnEl.hidden = true;
+  }
 
   const startKm = (state.startOffset / 1000).toFixed(2);
   const [slat, slng] = latLngAt(state.startOffset);
